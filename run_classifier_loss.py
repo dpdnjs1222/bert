@@ -669,7 +669,7 @@ def create_model(bert_config, is_training, input_ids, input_mask, segment_ids,
 
     loss_weight = 0.8+0.2*(tf.ones(tf.shape(sigmoid))-sigmoid)
     per_example_loss_correct = -tf.reduce_sum(one_hot_labels * log_probs, axis=-1)
-    per_example_loss_incorrect = -tf.reduce_sum(one_hot_labels * log_probs * loss_weight, asix=-1)
+    per_example_loss_incorrect = -tf.reduce_sum(one_hot_labels * log_probs * loss_weight, axis=-1)
     per_example_cond = tf.greater(is_correct, 0)
     per_example_loss = tf.where(per_example_cond, per_example_loss_correct, per_example_loss_incorrect)
     #per_example_loss = -tf.reduce_sum(one_hot_labels * log_probs, axis=-1)
