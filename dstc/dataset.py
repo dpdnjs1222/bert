@@ -20,12 +20,12 @@ from scripts.knowledge_reader import KnowledgeReader
 logger = logging.getLogger(__name__)
 
 SPECIAL_TOKENS = {
-    "bos_token": "<bos>",
-    "eos_token": "<eos>",
-    "pad_token": "<pad>",
-    "additional_special_tokens": ["<speaker1>", "<speaker2>", "<knowledge_sep>", "<knowledge_tag>"],
+    "bos_token": "[CLS]",
+    "eos_token": "[SEP]",
+    "pad_token": "[PAD]",
+    "additional_special_tokens": ["[SPEAKER1]", "[SPEAKER2]", "[KNOWLEDGE_SEP]", "[KNOWLEDGE_TAG]"],
 }
-SPECIAL_TOKENS_VALUES = ["<bos>", "<eos>", "<pad>", "<speaker1>", "<speaker2>", "<knowledge_sep>", "<knowledge_tag>"]
+SPECIAL_TOKENS_VALUES = ["[CLS]", "[SEP]", "[PAD]", "[SPEAKER1]", "[SPEAKER2]", "[KNOWLEDGE_SEP]", "[KNOWLEDGE_TAG]"]
 
 
 class BaseDataset(torch.utils.data.Dataset):
@@ -37,9 +37,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
         self.SPECIAL_TOKENS = SPECIAL_TOKENS
         self.SPECIAL_TOKENS_VALUES = SPECIAL_TOKENS_VALUES
-        self.bos = self.tokenizer.convert_tokens_to_ids(self.SPECIAL_TOKENS["bos_token"])
-        self.eos = self.tokenizer.convert_tokens_to_ids(self.SPECIAL_TOKENS["eos_token"])
-        self.pad = self.tokenizer.convert_tokens_to_ids(self.SPECIAL_TOKENS["pad_token"])
+        self.bos = self.tokenizer.convert_tokens_to_ids([self.SPECIAL_TOKENS["bos_token"]])
+        self.eos = self.tokenizer.convert_tokens_to_ids([self.SPECIAL_TOKENS["eos_token"]])
+        self.pad = self.tokenizer.convert_tokens_to_ids([self.SPECIAL_TOKENS["pad_token"]])
         self.speaker1, self.speaker2, self.knowledge_sep, self.knowledge_tag = self.tokenizer.convert_tokens_to_ids(
             self.SPECIAL_TOKENS["additional_special_tokens"]
         )
@@ -282,16 +282,17 @@ class KnowledgeSelectionDataset(BaseDataset):
         """ Build a sequence of input from 2 segments: knowledge and history"""
         instance = {}
 
-        sequence = [[self.bos]] + history
+        sequence = [self.bos] + history
         sequence_with_speaker = [
             [self.speaker1 if (len(sequence) - i) % 2 == 0 else self.speaker2] + s
             for i, s in enumerate(sequence[1:])
         ]
-        sequence = [sequence[0]] + sequence_with_speaker + [[self.knowledge_tag] + knowledge + [self.eos]]
+        sequence = [sequence[0]] + sequence_with_speaker + [[self.knowledge_tag] + knowledge + self.eos]
 
         instance["input_ids"] = list(chain(*sequence))
-        instance["token_type_ids"] = [self.speaker2 if i % 2 else self.speaker1 for i, s in enumerate(sequence[:-1]) for
-                                      _ in s] + [self.knowledge_tag for _ in sequence[-1]]
+        instance["token_type_ids"] = [0 for i, s in enumerate(sequence[:-1]) for _ in s] + [1 for _ in sequence[-1]]
+                                    #[self.speaker2 if i % 2 else self.speaker1 for i, s in enumerate(sequence[:-1]) for
+                                      #_ in s] + [self.knowledge_tag for _ in sequence[-1]]
         instance["mc_token_ids"] = len(instance["input_ids"]) - 1
 
         return instance, sequence

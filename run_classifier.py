@@ -18,14 +18,22 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import argparse
 import collections
 import csv
+import json
+import logging
 import os
+
+import torch
+from dstc.dataset import KnowledgeSelectionDataset
+from dstc.utils.argument import verify_args, update_additional_params, set_default_params, \
+    set_default_dataset_params
+
 import modeling
 import optimization
 import tokenization
 import tensorflow as tf
-import random
 
 flags = tf.flags
 
@@ -205,7 +213,7 @@ class DataProcessor(object):
       return lines
 
   @classmethod
-  def _read_text(cls, input_file, quotechar=None):#only for naver data
+  def _read_text(cls, input_file, quotechar=None):
     """Reads text file"""
     with open(input_file, 'r', encoding='UTF-8') as f:
       lines = []
@@ -426,6 +434,44 @@ class NaverProcessor(DataProcessor):
           InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
     return examples
 
+class DSTCProcessor(DataProcessor):
+    """Processor for the DSTC data set"""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_text(os.path.join(data_dir, "ratings_train.txt")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_text(os.path.join(data_dir, "ratings_test.txt")), "dev")
+
+    # def get_test_examples(self, data_dir):
+    #  """See base class."""
+    #  return self._create_examples(
+    #      self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+
+            guid = "%s-%s" % (set_type, i)
+            text_a = tokenization.convert_to_unicode(line[1])
+            if set_type == "test":
+                label = "0"
+            else:
+                label = tokenization.convert_to_unicode(line[2])
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+        return examples
 
 def convert_single_example(ex_index, example, label_list, max_seq_length,
                            tokenizer):
@@ -844,7 +890,8 @@ def main(_):
       "mnli": MnliProcessor,
       "mrpc": MrpcProcessor,
       "xnli": XnliProcessor,
-      "naver" : NaverProcessor
+      "naver" : NaverProcessor,
+      "dstc" : DSTCProcessor
   }
 
   tokenization.validate_case_matches_checkpoint(FLAGS.do_lower_case,
@@ -872,9 +919,9 @@ def main(_):
   processor = processors[task_name]()
 
   label_list = processor.get_labels()
-
   tokenizer = tokenization.FullTokenizer(
       vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
+  train_examples = KnowledgeSelectionDataset(dataset_args, tokenizer, split_type="train")
 
   tpu_cluster_resolver = None
   if FLAGS.use_tpu and FLAGS.tpu_name:
@@ -896,7 +943,7 @@ def main(_):
   num_train_steps = None
   num_warmup_steps = None
   if FLAGS.do_train:
-    train_examples = processor.get_train_examples(FLAGS.data_dir)
+    #train_examples = processor.get_train_examples(FLAGS.data_dir)
     num_train_steps = int(
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
@@ -1030,9 +1077,85 @@ def main(_):
 
 
 if __name__ == "__main__":
-  flags.mark_flag_as_required("data_dir")
+  #flags.mark_flag_as_required("data_dir")
   flags.mark_flag_as_required("task_name")
   flags.mark_flag_as_required("vocab_file")
   flags.mark_flag_as_required("bert_config_file")
   flags.mark_flag_as_required("output_dir")
+
+  parser = argparse.ArgumentParser()
+
+  # Required parameters
+  parser.add_argument("--params_file", type=str, help="JSON configuration file")
+  parser.add_argument("--eval_only", action="store_true",
+                      help="Perform evaluation only")
+  parser.add_argument("--checkpoint", type=str, help="Saved checkpoint directory")
+  parser.add_argument("--history_max_tokens", type=int, default=-1,
+                      help="Maximum length in tokens for history, will override that value in config.")
+  parser.add_argument("--knowledge_max_tokens", type=int, default=-1,
+                      help="Maximum length in tokens for knowledge, will override that value in config.")
+  parser.add_argument("--dataroot", type=str, default="data",
+                      help="Path to dataset.")
+  parser.add_argument("--knowledge_file", type=str, default="knowledge.json",
+                      help="knowledge file name.")
+  parser.add_argument("--eval_dataset", type=str, default="val",
+                      help="Dataset to evaluate on, will load dataset from {dataroot}/{eval_dataset}")
+  parser.add_argument("--no_labels", action="store_true",
+                      help="Read a dataset without labels.json. This option is useful when running "
+                           "knowledge-seeking turn detection on test dataset where labels.json is not available.")
+  parser.add_argument("--labels_file", type=str, default=None,
+                      help="If set, the labels will be loaded not from the default path, but from this file instead."
+                           "This option is useful to take the outputs from the previous task in the pipe-lined evaluation.")
+  parser.add_argument("--output_file", type=str, default="", help="Predictions will be written to this file.")
+  parser.add_argument("--negative_sample_method", type=str, choices=["all", "mix", "oracle"],
+                      default="",
+                      help="Negative sampling method for knowledge selection, will override the value in config.")
+  parser.add_argument("--eval_all_snippets", action='store_true',
+                      help="If set, the candidates to be selected would be all knowledge snippets, not sampled subset.")
+  parser.add_argument("--exp_name", type=str, default="",
+                      help="Name of the experiment, checkpoints will be stored in runs/{exp_name}")
+  parser.add_argument("--eval_desc", type=str, default="",
+                      help="Optional description to be listed in eval_results.txt")
+  parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
+                      help="Device (cuda or cpu)")
+  parser.add_argument("--local_rank", type=int, default=-1,
+                      help="Local rank for distributed training (-1: not distributed)")
+  parser.add_argument("--task_name", type=str, default="", help="task name")
+  parser.add_argument("--do_train", type=bool, default=False, help="")
+  parser.add_argument("--do_predict", type=bool, default=False, help="")
+  parser.add_argument("--data_dir", type=str, default="", help="data directory")
+  parser.add_argument("--vocab_file", type=str, help="pretrained model vocab file")
+  parser.add_argument("--bert_config_file", type=str, help="bert config file path")
+  parser.add_argument("--init_checkpoint", type=str, help="bert init checkpoint")
+  parser.add_argument("--max_seq_length", type=int, default=128, help="max sequence length")
+  parser.add_argument("--output_dir", type=str, default="output", help="output directory")
+
+  args = parser.parse_args()
+
+  # Setup logging
+  logging.basicConfig(
+      format="%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d : %(message)s",
+      datefmt="%m/%d/%Y %H:%M:%S",
+      level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN,
+  )
+
+  verify_args(args, parser)
+
+  # load args from params file and update the args Namespace
+  with open(args.params_file, "r") as f:
+      params = json.load(f)
+      args = vars(args)
+
+      update_additional_params(params, args)
+      args.update(params)
+      args = argparse.Namespace(**args)
+
+  args.params = params  # used for saving checkpoints
+  set_default_params(args)
+  dataset_args = argparse.Namespace(**args.dataset_args)
+  set_default_dataset_params(dataset_args)
+  dataset_args.local_rank = args.local_rank
+  dataset_args.task = args.task
+
+
   tf.app.run()
